@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+@font-face {
+  font-family: 'Xiaolai';
+  src: url('/fonts/Xiaolai-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  /* 建议加上这行，告诉浏览器加载策略 */
+  font-display: swap; 
+}
+
+/* 强力注入：不仅覆盖变量，还覆盖所有内部可能的文本容器 */
+.tl-container, 
+.tl-container * {
+  font-family: 'Xiaolai', sans-serif !important;
+}
+
+/* 如果你也想替换默认的无衬线字体（Sans），可以加上这行 */
+/* .tl-container {
+  --tl-font-sans: "Xiaolai", sans-serif !important;
+} */
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
