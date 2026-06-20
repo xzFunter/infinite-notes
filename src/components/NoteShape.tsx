@@ -58,6 +58,8 @@ export class NoteShapeUtil extends ShapeUtil<INoteShape> {
 
   override canEdit() { return true; }
 
+  override canResize() { return true; }
+
   override onDoubleClick(shape: INoteShape) {
     window.dispatchEvent(new CustomEvent('tldraw-enter-board', { detail: shape.props.childBoardId }));
   }

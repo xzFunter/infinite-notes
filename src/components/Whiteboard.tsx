@@ -423,7 +423,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               const img = new Image();
               img.onload = () => {
                 resolve({
-                  id: createShapeId(), typeName: 'asset', type: 'image',
+                  id: `asset:${createShapeId().replace('shape:', '')}`, typeName: 'asset', type: 'image',
                   props: { src: data.url, w: img.naturalWidth, h: img.naturalHeight, isAnimated: false, mimeType: file.type, name: file.name }
                 });
               };
