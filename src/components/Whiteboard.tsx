@@ -20,7 +20,7 @@ import {
   DefaultPageMenu
 } from 'tldraw';
 import 'tldraw/tldraw.css';
-import { NoteShapeUtil } from './NoteShape';
+import { NoteShapeUtil, FixedBuiltInNoteUtil } from './NoteShape';
 
 const NOTE_COLORS: Record<string, string> = {
   yellow: '#fef08a', 'light-red': '#fecaca', 'light-blue': '#bae6fd', 'light-green': '#d9f99d',
@@ -109,7 +109,7 @@ export class NoteTool extends BaseBoxShapeTool {
   override shapeType = 'custom-note' as const;
 }
 
-const customShapeUtils = [NoteShapeUtil];
+const customShapeUtils = [NoteShapeUtil, FixedBuiltInNoteUtil];
 const customTools = [NoteTool];
 
 const uiOverrides: TLUiOverrides = {
@@ -424,6 +424,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               img.onload = () => {
                 resolve({
                   id: `asset:${createShapeId().replace('shape:', '')}`, typeName: 'asset', type: 'image',
+                  meta: {},
                   props: { src: data.url, w: img.naturalWidth, h: img.naturalHeight, isAnimated: false, mimeType: file.type, name: file.name }
                 });
               };

@@ -1,4 +1,4 @@
-import { HTMLContainer, TLShape, ShapeUtil, T, Rectangle2d, resizeBox, TLResizeInfo } from 'tldraw';
+import { HTMLContainer, TLShape, ShapeUtil, T, Rectangle2d, resizeBox, TLResizeInfo, NoteShapeUtil as BuiltInNoteShapeUtil, getDisplayValues } from 'tldraw';
 
 const NOTE_SHAPE_TYPE = 'custom-note';
 
@@ -120,5 +120,106 @@ export class NoteShapeUtil extends ShapeUtil<INoteShape> {
     const path = new Path2D();
     path.roundRect(0, 0, shape.props.w, shape.props.h, shape.props.borderRadius);
     return path;
+  }
+}
+
+// 修复 tldraw 内置 note 形状：
+// 1. 显示大小调整手柄（替代原版 clone 快捷复制手柄）
+// 2. 长宽不锁定等比例，自由缩放
+// 3. 缩放时文字保持原大小，随宽度自动重排换行
+export class FixedBuiltInNoteUtil extends BuiltInNoteShapeUtil {
+  static override type = 'note' as const;
+
+  constructor(editor: any) {
+    super(editor);
+    // 包装 getDefaultDisplayValues，使其从 shape.meta 读取自定义宽高
+    const origFn = this.options.getDefaultDisplayValues.bind(this);
+    this.options.getDefaultDisplayValues = (ed: any, shape: any, theme: any, cm: any) => {
+      const dv = origFn(ed, shape, theme, cm);
+      const meta = (shape as any).meta || {};
+      if (meta.noteWidth) dv.noteWidth = meta.noteWidth;
+      if (meta.noteHeight) dv.noteHeight = meta.noteHeight;
+      return dv;
+    };
+  }
+
+  // 始终显示四角缩放手柄（原版 resizeMode="none" 会隐藏）
+  override hideResizeHandles(_shape: any) { return false; }
+
+  // 移除快捷复制手柄（原版在选中时显示 clone 按钮）
+  override getHandles(_shape: any) { return []; }
+
+  // 允许长宽自由缩放（不锁定等比例）
+  override isAspectRatioLocked(_shape: any) { return false; }
+
+  // 自定义缩放：把宽高存入 meta，scale 恒为 1（避免文字被 CSS scale 缩放）
+  override onResize(shape: any, info: any) {
+    const { initialShape, scaleX, scaleY } = info;
+    const initMeta = initialShape.meta || {};
+    const baseW = initMeta.noteWidth || 200;
+    const baseH = initMeta.noteHeight || 200;
+
+    let newShape = {
+      ...shape,
+      props: { ...shape.props, scale: 1 },
+      meta: {
+        ...shape.meta,
+        noteWidth: Math.max(50, baseW * scaleX),
+        noteHeight: Math.max(50, baseH * scaleY),
+      },
+    };
+
+    // 根据新宽度重新计算文字布局（换行 → growY），保证不缩字号
+    return this.computeNoteSizeAdjustments(newShape) ?? newShape;
+  }
+
+  override onBeforeCreate(next: any) {
+    return this.computeNoteSizeAdjustments(next);
+  }
+
+  override onBeforeUpdate(prev: any, next: any) {
+    const result = super.onBeforeUpdate(prev, next);
+    if (result === undefined) return undefined;
+    return this.computeNoteSizeAdjustments(result) ?? result;
+  }
+
+  // 父类 getNoteSizeAdjustments 是 private 类字段，无法 super 调用；在此独立实现
+  private computeNoteSizeAdjustments(shape: any) {
+    const dv = getDisplayValues(this, shape);
+    const fontSizeAdjustment = 1;
+
+    const text = this.getText(shape);
+    let labelHeight: number;
+    if (!text) {
+      labelHeight = dv.labelFontSize * dv.labelLineHeight + dv.labelPadding * 2;
+    } else {
+      try {
+        const measured = this.editor.textMeasure.measureText(text, {
+          fontFamily: dv.labelFontFamily,
+          fontSize: dv.labelFontSize,
+          lineHeight: dv.labelLineHeight,
+          maxWidth: dv.noteWidth - dv.labelPadding * 2 - 1,
+          fontWeight: 'normal',
+          fontStyle: 'normal',
+          fontVariant: 'normal',
+        } as any);
+        labelHeight = (measured.h || 0) + dv.labelPadding * 2;
+      } catch {
+        labelHeight = dv.noteHeight;
+      }
+    }
+
+    const growY = Math.max(0, labelHeight - dv.noteHeight);
+    if (growY !== shape.props.growY || fontSizeAdjustment !== shape.props.fontSizeAdjustment) {
+      return {
+        ...shape,
+        props: {
+          ...shape.props,
+          growY,
+          fontSizeAdjustment,
+        },
+      };
+    }
+    return undefined;
   }
 }
