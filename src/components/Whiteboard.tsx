@@ -469,6 +469,62 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
             });
           });
 
+          // 剪贴板粘贴图片 (Ctrl+V / Cmd+V)
+          editor.registerExternalContentHandler('files', async ({ files, point }) => {
+            const imageFiles = (files as File[]).filter(f => f.type.startsWith('image/'));
+            if (imageFiles.length === 0) return;
+
+            // 确定粘贴位置：优先用传入的 point，其次用视口中心
+            let targetPoint = point;
+            if (!targetPoint) {
+              const vp = editor.getViewportScreenBounds();
+              targetPoint = editor.screenToPage({ x: vp.x + vp.w / 2, y: vp.y + vp.h / 2 });
+            }
+
+            let offsetX = 0;
+            for (const file of imageFiles) {
+              try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const uploadData = await res.json();
+                if (!uploadData.url) continue;
+
+                const dims = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+                  const img = new Image();
+                  img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+                  img.onerror = () => reject(new Error('图片加载失败'));
+                  img.src = uploadData.url;
+                });
+
+                const assetId = `asset:${createShapeId().replace('shape:', '')}`;
+
+                // 限制粘贴图片的初始尺寸（最大 500px 宽）
+                const maxWidth = 500;
+                const scale = dims.w > maxWidth ? maxWidth / dims.w : 1;
+                const displayW = Math.round(dims.w * scale);
+                const displayH = Math.round(dims.h * scale);
+
+                editor.createAssets([{
+                  id: assetId, typeName: 'asset', type: 'image', meta: {},
+                  props: { src: uploadData.url, w: dims.w, h: dims.h, isAnimated: false, mimeType: file.type, name: file.name }
+                } as any]);
+
+                const shapeId = createShapeId();
+                editor.createShapes([{
+                  id: shapeId, type: 'image',
+                  x: targetPoint.x + offsetX, y: targetPoint.y + offsetX,
+                  props: { assetId, w: displayW, h: displayH }
+                } as any]);
+
+                // 多张图片错开排列
+                offsetX += 30;
+              } catch (e) {
+                console.error('粘贴图片失败:', e);
+              }
+            }
+          });
+
           fetch(`/api/board/${boardId}`)
             .then(res => res.json())
             .then(data => {
