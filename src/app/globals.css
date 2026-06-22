@@ -38,6 +38,11 @@
   text-shadow: none !important;
 }
 
+/* 工具栏扩容：允许显示更多工具 */
+.tlui-main-toolbar {
+  max-width: 900px !important;
+}
+
 /* 如果你也想替换默认的无衬线字体（Sans），可以加上这行 */
 /* .tl-container {
   --tl-font-sans: "Xiaolai", sans-serif !important;

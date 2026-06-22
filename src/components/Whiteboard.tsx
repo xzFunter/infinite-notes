@@ -192,10 +192,14 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
       const tools = useTools();
       const isNoteSelected = useIsToolSelected(tools['custom-note']);
       const isGroupSelected = useIsToolSelected(tools['group-rect']);
+      const isAssetSelected = useIsToolSelected(tools['asset']);
+      const isBuiltInNoteSelected = useIsToolSelected(tools['note']);
       return (
-        <DefaultToolbar {...props}>
+        <DefaultToolbar {...props} minItems={9} maxItems={10}>
           <TldrawUiMenuItem {...tools['custom-note']} isSelected={isNoteSelected} />
           <TldrawUiMenuItem {...tools['group-rect']} isSelected={isGroupSelected} />
+          <TldrawUiMenuItem {...tools['note']} isSelected={isBuiltInNoteSelected} />
+          {tools['asset'] && <TldrawUiMenuItem {...tools['asset']} isSelected={isAssetSelected} />}
           <DefaultToolbarContent />
         </DefaultToolbar>
       );
