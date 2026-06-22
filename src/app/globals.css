@@ -28,9 +28,14 @@
 }
 
 /* 强力注入：不仅覆盖变量，还覆盖所有内部可能的文本容器 */
-.tl-container, 
+.tl-container,
 .tl-container * {
   font-family: 'Xiaolai', sans-serif !important;
+}
+
+/* 关闭 tldraw 文字组件的 text-shadow 描边（在有色背景上会形成白边） */
+.tl-text__outline {
+  text-shadow: none !important;
 }
 
 /* 如果你也想替换默认的无衬线字体（Sans），可以加上这行 */

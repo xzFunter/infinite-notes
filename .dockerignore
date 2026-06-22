@@ -1,0 +1,8 @@
+# runtime data — 禁止打入镜像, 由 volume mount 提供
+data/
+
+# 以下已有 .gitignore 覆盖, 但 .dockerignore 不继承 .gitignore
+node_modules/
+.git/
+.next/
+*.zip

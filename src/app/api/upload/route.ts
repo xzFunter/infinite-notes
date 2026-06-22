@@ -1,11 +1,37 @@
 import { NextResponse } from 'next/server';
-import { writeFile, rename, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { writeFile, rename, mkdir, readdir, unlink } from 'fs/promises';
+import { existsSync, statSync } from 'fs';
 import path from 'path';
 
 // 统一指向刚刚规划好的 data 目录
 const UPLOADS_DIR = path.join(process.cwd(), 'data', 'uploads');
 const TRASH_DIR = path.join(process.cwd(), 'data', 'trash');
+
+// 垃圾箱文件保留天数
+const TRASH_TTL_DAYS = 30;
+
+// 清理过期垃圾文件
+async function cleanExpiredTrash(): Promise<number> {
+  let deleted = 0;
+  try {
+    if (!existsSync(TRASH_DIR)) return 0;
+    const files = await readdir(TRASH_DIR);
+    const now = Date.now();
+    const ttlMs = TRASH_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+    for (const file of files) {
+      const filePath = path.join(TRASH_DIR, file);
+      try {
+        const stats = statSync(filePath);
+        if (now - stats.mtimeMs > ttlMs) {
+          await unlink(filePath);
+          deleted++;
+        }
+      } catch { /* 单个文件失败不影响其他 */ }
+    }
+  } catch { /* ignore */ }
+  return deleted;
+}
 
 // 【POST】上传图片
 export async function POST(request: Request) {
@@ -61,18 +87,28 @@ export async function PUT(request: Request) {
     if (!url || !url.startsWith('/uploads/')) return NextResponse.json({ success: false }, { status: 400 });
 
     const filename = url.replace('/uploads/', '');
-    const sourcePath = path.join(TRASH_DIR, filename); // 原文件现在在垃圾桶
-    const targetPath = path.join(UPLOADS_DIR, filename); // 目标是恢复到上传目录
+    const sourcePath = path.join(TRASH_DIR, filename);
+    const targetPath = path.join(UPLOADS_DIR, filename);
 
     if (!existsSync(sourcePath)) return NextResponse.json({ success: true });
     if (!existsSync(UPLOADS_DIR)) await mkdir(UPLOADS_DIR, { recursive: true });
 
-    // 瞬间移动回去
     await rename(sourcePath, targetPath);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('恢复文件失败:', error);
     return NextResponse.json({ success: false }, { status: 500 });
+  }
+}
+
+// 【GET】清理过期垃圾文件（>30天）
+export async function GET() {
+  try {
+    const deleted = await cleanExpiredTrash();
+    return NextResponse.json({ success: true, deleted });
+  } catch (error) {
+    console.error('清理垃圾箱失败:', error);
+    return NextResponse.json({ success: false, error: 'Cleanup failed' }, { status: 500 });
   }
 }

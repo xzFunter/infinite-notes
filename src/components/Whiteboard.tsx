@@ -21,6 +21,7 @@ import {
 } from 'tldraw';
 import 'tldraw/tldraw.css';
 import { NoteShapeUtil, FixedBuiltInNoteUtil, TEXT_COLORS, FONT_SIZES } from './NoteShape';
+import { GroupShapeUtil, GroupTool, GROUP_COLORS, findContainingGroup } from './GroupShape';
 
 const NOTE_COLORS: Record<string, string> = {
   yellow: '#fef08a', 'light-red': '#fecaca', 'light-blue': '#bae6fd', 'light-green': '#d9f99d',
@@ -109,12 +110,13 @@ export class NoteTool extends BaseBoxShapeTool {
   override shapeType = 'custom-note' as const;
 }
 
-const customShapeUtils = [NoteShapeUtil, FixedBuiltInNoteUtil];
-const customTools = [NoteTool];
+const customShapeUtils = [NoteShapeUtil, FixedBuiltInNoteUtil, GroupShapeUtil];
+const customTools = [NoteTool, GroupTool];
 
 const uiOverrides: TLUiOverrides = {
   tools(editor, tools) {
     tools['custom-note'] = { id: 'custom-note', icon: 'tool-note', label: '子白板便签', kbd: 'n', onSelect: () => editor.setCurrentTool('custom-note') };
+    tools['group-rect'] = { id: 'group-rect', icon: 'tool-frame', label: '组', kbd: 'g', onSelect: () => editor.setCurrentTool('group-rect') };
     return tools;
   },
 };
@@ -151,6 +153,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
   const noteDescriptionRef = useRef('');
 
   const [selectedNote, setSelectedNote] = useState<any | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<any | null>(null);
   const [sliderBase, setSliderBase] = useState<any | null>(null);
   const [textEditTab, setTextEditTab] = useState<'title' | 'desc'>('title');
 
@@ -165,6 +168,10 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
   const isParentDataLoadedRef = useRef(false);
   const isTitleCapturedRef = useRef(false);
   const isImgCapturedRef = useRef(false);
+  const membershipCheckTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const fullRecheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastOrphanCleanupRef = useRef<number>(0);
+  const trashCleanedRef = useRef<boolean>(false);
 
   // 【核心优化 1：记录出处 Sheet】不再记录 rootId，而是记录 rootPageId
   const [urlRootPageId, setUrlRootPageId] = useState<string | null>(null);
@@ -184,9 +191,11 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
     Toolbar: (props) => {
       const tools = useTools();
       const isNoteSelected = useIsToolSelected(tools['custom-note']);
+      const isGroupSelected = useIsToolSelected(tools['group-rect']);
       return (
         <DefaultToolbar {...props}>
           <TldrawUiMenuItem {...tools['custom-note']} isSelected={isNoteSelected} />
+          <TldrawUiMenuItem {...tools['group-rect']} isSelected={isGroupSelected} />
           <DefaultToolbarContent />
         </DefaultToolbar>
       );
@@ -418,6 +427,22 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
           DefaultFontFamilies.draw = 'Xiaolai';
           editor.updateInstanceState({ isFocusMode: false });
 
+          // 拦截删除操作：删除组时保留子元素在原地
+          const origDeleteShapes = editor.deleteShapes.bind(editor);
+          editor.deleteShapes = (ids: any) => {
+            const idList = Array.isArray(ids) ? ids : [ids];
+            for (const id of idList) {
+              const shape = editor.getShape(id);
+              if (shape && shape.type === 'group-rect') {
+                const children = editor.getSortedChildIdsForParent(id as any);
+                if (children.length > 0) {
+                  (editor as any).reparentShapes(children, editor.getCurrentPageId());
+                }
+              }
+            }
+            return origDeleteShapes(idList);
+          };
+
           editor.registerExternalAssetHandler('file', async ({ file }) => {
             if (!file.type.startsWith('image/')) throw new Error('目前仅支持图片上传');
             const formData = new FormData();
@@ -496,9 +521,13 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
             });
 
           const cleanupSelection = editor.store.listen(() => {
-            const selected = editor.getSelectedShapes().filter(s => s.type === 'custom-note');
-            if (selected.length === 1) {
-              const s = selected[0];
+            const selected = editor.getSelectedShapes();
+
+            // 便签选择
+            const noteSelected = selected.filter(s => s.type === 'custom-note');
+            if (noteSelected.length === 1) {
+              const s = noteSelected[0];
+              setSelectedGroup(null);
               setSelectedNote((prev: any) => {
                 if (!prev || prev.id !== s.id || prev.rotation !== s.rotation ||
                   prev.opacity !== s.opacity || prev.props?.color !== s.props?.color ||
@@ -513,6 +542,21 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               });
             } else {
               setSelectedNote(null);
+            }
+
+            // 组选择
+            const groupSelected = selected.filter(s => s.type === 'group-rect');
+            if (groupSelected.length === 1) {
+              const s = groupSelected[0];
+              setSelectedNote(null);
+              setSelectedGroup((prev: any) => {
+                if (!prev || prev.id !== s.id || prev.opacity !== s.opacity || prev.props?.color !== s.props?.color) {
+                  return { ...s };
+                }
+                return prev;
+              });
+            } else {
+              setSelectedGroup(null);
             }
           });
 
@@ -537,6 +581,103 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
             const removedShapes = Object.values(entry.changes.removed).filter((r: any) => r && r.typeName === 'shape') as any[];
             const changedShapes = [...addedShapes, ...updatedShapes];
 
+            // ===== 组隶属关系管理 =====
+            const allGroups = editor.getCurrentPageShapes().filter((s: any) => s.type === 'group-rect') as any[];
+
+            if (allGroups.length > 0) {
+              // 防抖/重判用的辅助：判断当前是否正在拖拽中（拖拽期间不触发 reparent，避免坐标系统紊乱）
+              const isDragging = () => {
+                try {
+                  const root = (editor as any).root?.current?.value;
+                  return root === 'select.translating' || root === 'select.resizing';
+                } catch { return false; }
+              };
+
+              // 通用隶属重判函数
+              const recheckAllMemberships = () => {
+                if (isDragging()) return;
+                const currentGroups = editor.getCurrentPageShapes().filter((s: any) => s.type === 'group-rect') as any[];
+                const allShapes = editor.getCurrentPageShapes();
+                const nonGroups = allShapes.filter((s: any) => s.type !== 'group-rect');
+                for (const s of nonGroups) {
+                  const targetGroup = findContainingGroup(editor, s, currentGroups);
+                  const currentParent = (s as any).parentId;
+                  if (targetGroup && currentParent !== targetGroup.id) {
+                    (editor as any).reparentShapes([s.id], targetGroup.id);
+                  } else if (!targetGroup && currentParent && currentGroups.some((g: any) => g.id === currentParent)) {
+                    (editor as any).reparentShapes([s.id], editor.getCurrentPageId());
+                  }
+                }
+              };
+
+              // 全量重判防抖定时器
+              const debouncedRecheckAll = () => {
+                if (fullRecheckTimerRef.current) clearTimeout(fullRecheckTimerRef.current);
+                fullRecheckTimerRef.current = setTimeout(recheckAllMemberships, 300);
+              };
+
+              // 1. 检查组缩放完成后的隶属刷新（防抖延后，等操作完全释放）
+              for (const g of allGroups) {
+                if ((g as any).meta?.needsMembershipCheck) {
+                  editor.updateShape({ id: g.id, type: 'group-rect', meta: { needsMembershipCheck: false } } as any);
+                  debouncedRecheckAll();
+                  break;
+                }
+              }
+
+              // 2. 检测组的移动 → 全量重判
+              for (const s of updatedShapes) {
+                if (s.type !== 'group-rect') continue;
+                const oldRecord = Object.values(entry.changes.updated).find(
+                  (u: any) => u[1]?.id === s.id
+                ) as any;
+                const oldShape = oldRecord?.[0];
+                if (oldShape && (oldShape.x !== s.x || oldShape.y !== s.y)) {
+                  debouncedRecheckAll();
+                  break;
+                }
+              }
+
+              // 3. 检测非组形状的位置变化，防抖后判定隶属
+              const membershipCheck = (shapeId: string) => {
+                if (isDragging()) return;
+                const shape = editor.getShape(shapeId as any);
+                if (!shape || shape.type === 'group-rect') return;
+                const currentGroups = editor.getCurrentPageShapes().filter((s: any) => s.type === 'group-rect') as any[];
+                if (currentGroups.length === 0) return;
+                const targetGroup = findContainingGroup(editor, shape, currentGroups);
+                const currentParent = (shape as any).parentId;
+                if (targetGroup && currentParent !== targetGroup.id) {
+                  (editor as any).reparentShapes([shape.id], targetGroup.id);
+                } else if (!targetGroup && currentParent && currentGroups.some((g: any) => g.id === currentParent)) {
+                  (editor as any).reparentShapes([shape.id], editor.getCurrentPageId());
+                }
+              };
+
+              for (const s of updatedShapes) {
+                if (s.type === 'group-rect') continue;
+                const oldRecord = Object.values(entry.changes.updated).find(
+                  (u: any) => u[1]?.id === s.id
+                ) as any;
+                const oldShape = oldRecord?.[0];
+                if (oldShape && (oldShape.x !== s.x || oldShape.y !== s.y)) {
+                  const existing = membershipCheckTimersRef.current.get(s.id);
+                  if (existing) clearTimeout(existing);
+                  membershipCheckTimersRef.current.set(s.id, setTimeout(() => {
+                    membershipCheckTimersRef.current.delete(s.id);
+                    membershipCheck(s.id);
+                  }, 300));
+                }
+              }
+
+              // 检查新创建的非组形状
+              for (const s of addedShapes) {
+                if (s.type === 'group-rect') continue;
+                setTimeout(() => membershipCheck(s.id), 150);
+              }
+            }
+            // ===== 隶属关系管理结束 =====
+
             const addedCustomNotes = addedShapes.filter(s => s.type === 'custom-note');
             if (addedCustomNotes.length > 0) {
               const allNotes = editor.getCurrentPageShapes().filter(s => s.type === 'custom-note') as any[];
@@ -551,9 +692,10 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
 
             const addedAssets = Object.values(entry.changes.added).filter((r: any) => r && r.typeName === 'asset') as any[];
             const updatedAssets = Object.values(entry.changes.updated).map((u: any) => u[1]).filter((r: any) => r && r.typeName === 'asset') as any[];
-            const removedAssets = Object.values(entry.changes.removed).filter((r: any) => r && r.typeName === 'asset') as any[];
+            const removedShapesForAssets = Object.values(entry.changes.removed).filter((r: any) => r && r.typeName === 'shape') as any[];
             const changedAssets = [...addedAssets, ...updatedAssets];
 
+            // 新增 asset → 尝试从垃圾箱恢复文件
             if (addedAssets.length > 0) {
               addedAssets.forEach(async (asset: any) => {
                 const fileUrl = asset.props?.src;
@@ -563,6 +705,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               });
             }
 
+            // 新增 custom-note → 恢复缩略图 + 递归恢复子板资源
             addedShapes.forEach((shape: any) => {
               if (shape.type === 'custom-note') {
                 if (shape.props?.thumbnailUrl?.startsWith('/uploads/')) {
@@ -619,33 +762,66 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               }
             }
 
-            const allDocumentShapes = editor.store.allRecords().filter(r => r.typeName === 'shape');
-            const allAssets = editor.store.allRecords().filter(r => r.typeName === 'asset');
-            
-            const usedAssetIds = new Set(allDocumentShapes.map((s: any) => s.props?.assetId).filter(Boolean));
-            const orphanedAssets = allAssets.filter(a => !usedAssetIds.has(a.id));
+            const fullSnapshot = getSnapshot(editor.store);
 
-            if (orphanedAssets.length > 0) {
-              orphanedAssets.forEach(async (asset: any) => {
-                const fileUrl = asset.props?.src;
-                if (fileUrl && fileUrl.startsWith('/uploads/')) {
-                  try { await fetch('/api/upload', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: fileUrl }) }); } catch (e) { }
-                }
-              });
-              editor.deleteAssets(orphanedAssets.map(a => a.id));
+            fetch(`/api/board/${boardId}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                elements: JSON.stringify({
+                  snapshot: fullSnapshot,
+                  locks: { isTitleCaptured: isTitleCapturedRef.current, isImgCaptured: isImgCapturedRef.current }
+                }),
+                parentBoardId: parentBoardIdRef.current,
+                name: boardNameRef.current
+              }),
+            });
+
+            // 附带清理过期垃圾文件（>30天），非阻塞，每个会话只执行一次
+            if (!trashCleanedRef.current) {
+              trashCleanedRef.current = true;
+              fetch('/api/upload', { method: 'GET' }).catch(() => {});
             }
 
-            const usedThumbnails = new Set(
-              allDocumentShapes.filter(s => s.type === 'custom-note').map((s: any) => s.props?.thumbnailUrl).filter(Boolean)
-            );
+            // 孤儿 asset 检测 → 移入垃圾箱（限频 30 秒一次，避免高频保存时重复扫描）
+            const now = Date.now();
+            const allDocumentShapes = editor.store.allRecords().filter((r: any) => r.typeName === 'shape');
+            const allAssets = editor.store.allRecords().filter((r: any) => r.typeName === 'asset');
+            if (now - lastOrphanCleanupRef.current > 30000) {
+              lastOrphanCleanupRef.current = now;
+              const usedAssetIds = new Set(allDocumentShapes.map((s: any) => s.props?.assetId).filter(Boolean));
+              const orphanedAssets = allAssets.filter((a: any) => !usedAssetIds.has(a.id));
 
+              if (orphanedAssets.length > 0) {
+                orphanedAssets.forEach(async (asset: any) => {
+                  const fileUrl = asset.props?.src;
+                  if (fileUrl && fileUrl.startsWith('/uploads/')) {
+                    try { await fetch('/api/upload', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: fileUrl }) }); } catch (e) { }
+                  }
+                });
+                const orphanIds = orphanedAssets.map((a: any) => a.id);
+                setTimeout(() => {
+                  const currentShapes = editor.store.allRecords().filter((r: any) => r.typeName === 'shape');
+                  const currentUsedIds = new Set(currentShapes.map((s: any) => s.props?.assetId).filter(Boolean));
+                  const stillOrphaned = orphanIds.filter((id: string) => !currentUsedIds.has(id));
+                  if (stillOrphaned.length > 0) {
+                    editor.deleteAssets(stillOrphaned);
+                  }
+                }, 30000);
+              }
+            }
+
+            // 缩略图清理
+            const usedThumbnails = new Set(
+              allDocumentShapes.filter((s: any) => s.type === 'custom-note').map((s: any) => s.props?.thumbnailUrl).filter(Boolean)
+            );
             const checkAndTrashThumbnail = (url: string | undefined) => {
               if (url && url.startsWith('/uploads/') && !usedThumbnails.has(url)) {
                 fetch('/api/upload', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }).catch(() => {});
               }
             };
 
-            removedShapes.forEach((shape: any) => {
+            removedShapesForAssets.forEach((shape: any) => {
               if (shape.type === 'custom-note') {
                 checkAndTrashThumbnail(shape.props?.thumbnailUrl);
                 if (shape.props?.childBoardId) {
@@ -662,24 +838,75 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
                 }
               }
             });
-
-            const fullSnapshot = getSnapshot(editor.store);
-
-            fetch(`/api/board/${boardId}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                elements: JSON.stringify({ 
-                  snapshot: fullSnapshot,
-                  locks: { isTitleCaptured: isTitleCapturedRef.current, isImgCaptured: isImgCapturedRef.current }
-                }),
-                parentBoardId: parentBoardIdRef.current,
-                name: boardNameRef.current 
-              }),
-            });
           }, { scope: 'document', source: 'user' });
 
-          return () => { cleanupSelection(); cleanupDocument(); };
+          // 独立的 asset 恢复监听：当 asset 记录被重新创建时（undo/redo），从垃圾箱恢复文件
+          const restoreAssetsListener = editor.store.listen((entry) => {
+            if (isProgrammaticUpdateRef.current) return;
+
+            const addedShapes = Object.values(entry.changes.added).filter(
+              (r: any) => r && r.typeName === 'shape'
+            ) as any[];
+
+            for (const shape of addedShapes) {
+              // 图片 shape → 恢复其引用的 asset 文件
+              const assetId = shape.props?.assetId;
+              if (assetId) {
+                const asset = editor.getAsset(assetId);
+                const fileUrl = asset?.props?.src;
+                if (fileUrl && fileUrl.startsWith('/uploads/')) {
+                  fetch('/api/upload', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: fileUrl }) }).catch(() => {});
+                }
+              }
+              // custom-note → 恢复缩略图
+              if (shape.type === 'custom-note' && shape.props?.thumbnailUrl?.startsWith('/uploads/')) {
+                fetch('/api/upload', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: shape.props.thumbnailUrl }) }).catch(() => {});
+              }
+            }
+
+            // asset 更新（undo 两步恢复的第二步：先创建空 asset，再更新 src）
+            Object.values(entry.changes.updated).forEach((u: any) => {
+              const newAsset = u?.[1];
+              if (newAsset && newAsset.typeName === 'asset') {
+                const fileUrl = newAsset.props?.src;
+                if (fileUrl && fileUrl.startsWith('/uploads/')) {
+                  fetch('/api/upload', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: fileUrl }) }).catch(() => {});
+                }
+              }
+            });
+          });
+
+          // 应用启动 3 秒后扫描一次孤儿资源（兜底清理残留）
+          setTimeout(() => {
+            const allShapes = editor.store.allRecords().filter((r: any) => r.typeName === 'shape');
+            const allAssets = editor.store.allRecords().filter((r: any) => r.typeName === 'asset');
+            const usedIds = new Set(allShapes.map((s: any) => s.props?.assetId).filter(Boolean));
+            const orphaned = allAssets.filter((a: any) => !usedIds.has(a.id));
+            if (orphaned.length > 0) {
+              orphaned.forEach((asset: any) => {
+                const url = asset.props?.src;
+                if (url && url.startsWith('/uploads/')) {
+                  fetch('/api/upload', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }).catch(() => {});
+                }
+              });
+              const ids = orphaned.map((a: any) => a.id);
+              setTimeout(() => {
+                const curShapes = editor.store.allRecords().filter((r: any) => r.typeName === 'shape');
+                const curUsed = new Set(curShapes.map((s: any) => s.props?.assetId).filter(Boolean));
+                const stillOrphaned = ids.filter((id: string) => !curUsed.has(id));
+                if (stillOrphaned.length > 0) editor.deleteAssets(stillOrphaned);
+              }, 30000);
+            }
+          }, 3000);
+
+          return () => {
+            cleanupSelection();
+            cleanupDocument();
+            restoreAssetsListener();
+            membershipCheckTimersRef.current.forEach(t => clearTimeout(t));
+            membershipCheckTimersRef.current.clear();
+            if (fullRecheckTimerRef.current) clearTimeout(fullRecheckTimerRef.current);
+          };
         }}
       />
 
@@ -1004,6 +1231,54 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
               一键派生子节点
             </button>
+          </div>
+        </div>
+      )}
+
+      {selectedGroup && (
+        <div
+          className="absolute top-4 right-4 z-[1000] bg-white p-4 rounded-xl shadow-xl w-60 flex flex-col gap-4 border border-gray-100 select-none animate-in fade-in slide-in-from-top-2 duration-150"
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="text-xs font-bold text-gray-800 border-b pb-1.5 flex justify-between items-center">
+            <span>组样式设置</span>
+            <span className="text-[10px] text-gray-400 font-mono">GROUP</span>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-1 text-xs font-medium text-gray-700">
+              <span>不透明度</span>
+              <span className="text-gray-500">{Math.round((selectedGroup.opacity ?? 1) * 100)}%</span>
+            </div>
+            <input
+              type="range" min="10" max="100" step="5"
+              value={Math.round((selectedGroup.opacity ?? 1) * 100)}
+              onChange={e => {
+                const val = Number(e.target.value) / 100;
+                editorRef.current?.updateShapes([{ id: selectedGroup.id, type: 'group-rect', opacity: val } as any]);
+              }}
+              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1.5">组颜色</label>
+            <div className="grid grid-cols-6 gap-1.5">
+              {Object.keys(GROUP_COLORS).map(colorKey => (
+                <button
+                  key={colorKey}
+                  onClick={() => {
+                    editorRef.current?.updateShapes([{
+                      id: selectedGroup.id, type: 'group-rect', props: { color: colorKey }
+                    } as any]);
+                  }}
+                  className={`w-6 h-6 rounded-full border transition-all ${selectedGroup.props.color === colorKey ? 'border-gray-900 scale-110 ring-2 ring-blue-500/20 shadow-sm' : 'border-gray-200 hover:scale-105'}`}
+                  style={{ backgroundColor: GROUP_COLORS[colorKey] }}
+                  title={colorKey}
+                />
+              ))}
+            </div>
           </div>
         </div>
       )}
