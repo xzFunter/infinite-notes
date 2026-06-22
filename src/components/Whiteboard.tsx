@@ -20,7 +20,7 @@ import {
   DefaultPageMenu
 } from 'tldraw';
 import 'tldraw/tldraw.css';
-import { NoteShapeUtil, FixedBuiltInNoteUtil } from './NoteShape';
+import { NoteShapeUtil, FixedBuiltInNoteUtil, TEXT_COLORS, FONT_SIZES } from './NoteShape';
 
 const NOTE_COLORS: Record<string, string> = {
   yellow: '#fef08a', 'light-red': '#fecaca', 'light-blue': '#bae6fd', 'light-green': '#d9f99d',
@@ -147,9 +147,12 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
   const noteTitleRef = useRef('');
   const [noteImg, setNoteImg] = useState('');
   const noteImgRef = useRef('');
+  const [noteDescription, setNoteDescription] = useState('');
+  const noteDescriptionRef = useRef('');
 
   const [selectedNote, setSelectedNote] = useState<any | null>(null);
   const [sliderBase, setSliderBase] = useState<any | null>(null);
+  const [textEditTab, setTextEditTab] = useState<'title' | 'desc'>('title');
 
   const [boardName, setBoardName] = useState(boardId);
   const boardNameRef = useRef(boardId);
@@ -191,9 +194,10 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
     PageMenu: isRootBoard ? DefaultPageMenu : () => null,
   };
 
-  const updateParentNoteShape = async (newTitle: string, newImg: string) => {
+  const updateParentNoteShape = async (newTitle: string, newImg: string, newDescription: string) => {
     setNoteTitle(newTitle); noteTitleRef.current = newTitle;
     setNoteImg(newImg); noteImgRef.current = newImg;
+    setNoteDescription(newDescription); noteDescriptionRef.current = newDescription;
 
     const validName = newTitle.trim() ? newTitle : boardId;
     setBoardName(validName); boardNameRef.current = validName;
@@ -237,6 +241,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
             } else if (!newImg) { newH = newW; }
 
             s.props.title = newTitle;
+            s.props.description = newDescription;
             s.props.thumbnailUrl = newImg;
             s.props.w = newW;
             s.props.h = newH;
@@ -267,7 +272,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
 
             return {
               ...s,
-              props: { ...s.props, title: newTitle, thumbnailUrl: newImg, w: newW, h: newH },
+              props: { ...s.props, title: newTitle, description: newDescription, thumbnailUrl: newImg, w: newW, h: newH },
               meta: { ...(s.meta || {}), isTitleCaptured: isTitleCapturedRef.current, isImgCaptured: isImgCapturedRef.current }
             };
           }
@@ -347,9 +352,11 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
           if (myNote) {
             const fetchedTitle = myNote.props.title || '';
             const fetchedImg = myNote.props.thumbnailUrl || '';
+            const fetchedDesc = myNote.props.description || '';
 
             setNoteTitle(fetchedTitle); noteTitleRef.current = fetchedTitle;
             setNoteImg(fetchedImg); noteImgRef.current = fetchedImg;
+            setNoteDescription(fetchedDesc); noteDescriptionRef.current = fetchedDesc;
 
             const validName = fetchedTitle.trim() ? fetchedTitle : boardId;
             setBoardName(validName); boardNameRef.current = validName;
@@ -389,7 +396,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
   const handleSaveMeta = async () => {
     isTitleCapturedRef.current = true;
     isImgCapturedRef.current = true;
-    const success = await updateParentNoteShape(noteTitleRef.current, noteImgRef.current);
+    const success = await updateParentNoteShape(noteTitleRef.current, noteImgRef.current, noteDescriptionRef.current);
     if (success) { setIsModalOpen(false); }
   };
 
@@ -496,7 +503,10 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
                 if (!prev || prev.id !== s.id || prev.rotation !== s.rotation ||
                   prev.opacity !== s.opacity || prev.props?.color !== s.props?.color ||
                   prev.props?.isPinned !== s.props?.isPinned || prev.props?.borderRadius !== s.props?.borderRadius ||
-                  prev.props?.zIndex !== s.props?.zIndex) {
+                  prev.props?.zIndex !== s.props?.zIndex ||
+                  prev.props?.titleSize !== s.props?.titleSize || prev.props?.descSize !== s.props?.descSize ||
+                  prev.props?.titleColor !== s.props?.titleColor || prev.props?.descColor !== s.props?.descColor ||
+                  prev.props?.description !== s.props?.description || prev.props?.title !== s.props?.title) {
                   return { ...s };
                 }
                 return prev;
@@ -576,7 +586,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
                     autoFillTimeoutRef.current = window.setTimeout(() => {
                       if (!isTitleCapturedRef.current) {
                         isTitleCapturedRef.current = true;
-                        updateParentNoteShape(newText, noteImgRef.current);
+                        updateParentNoteShape(newText, noteImgRef.current, noteDescriptionRef.current);
                       }
                     }, 2000);
                     break;
@@ -604,7 +614,7 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
                 if (foundImgSrc) {
                   isImgCapturedRef.current = true;
                   if (foundW && foundH) { imgSizeRef.current = { w: foundW, h: foundH }; }
-                  updateParentNoteShape(noteTitleRef.current, foundImgSrc);
+                  updateParentNoteShape(noteTitleRef.current, foundImgSrc, noteDescriptionRef.current);
                 }
               }
             }
@@ -711,6 +721,82 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
           <div className="text-xs font-bold text-gray-800 border-b pb-1.5 flex justify-between items-center">
             <span>便签样式设置</span>
             <span className="text-[10px] text-gray-400 font-mono">SELECTED</span>
+          </div>
+
+          {/* 标题/描述 字号 + 颜色选择器 */}
+          <div>
+            {/* 选项卡 */}
+            <div className="flex gap-1 mb-2 bg-gray-100 rounded-md p-0.5">
+              {(['title', 'desc'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setTextEditTab(tab)}
+                  className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
+                    textEditTab === tab
+                      ? 'bg-white text-gray-800 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab === 'title' ? '标题' : '描述'}
+                </button>
+              ))}
+            </div>
+
+            {/* 字号 S M L XL */}
+            <div className="flex gap-1 mb-2">
+              {(['s', 'm', 'l', 'xl'] as const).map(size => {
+                const activeSize = textEditTab === 'title'
+                  ? selectedNote.props.titleSize || 'l'
+                  : selectedNote.props.descSize || 'm';
+                return (
+                  <button
+                    key={size}
+                    onClick={() => {
+                      const prop = textEditTab === 'title' ? 'titleSize' : 'descSize';
+                      editorRef.current?.updateShapes([{
+                        id: selectedNote.id, type: 'custom-note',
+                        props: { [prop]: size }
+                      } as any]);
+                    }}
+                    className={`flex-1 text-xs py-0.5 rounded font-medium transition-all ${
+                      activeSize === size
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {FONT_SIZES[size].label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 文字颜色调色盘 */}
+            <div className="grid grid-cols-6 gap-1">
+              {Object.keys(TEXT_COLORS).map(colorKey => {
+                const activeColor = textEditTab === 'title'
+                  ? selectedNote.props.titleColor || 'black'
+                  : selectedNote.props.descColor || 'grey';
+                return (
+                  <button
+                    key={colorKey}
+                    onClick={() => {
+                      const prop = textEditTab === 'title' ? 'titleColor' : 'descColor';
+                      editorRef.current?.updateShapes([{
+                        id: selectedNote.id, type: 'custom-note',
+                        props: { [prop]: colorKey }
+                      } as any]);
+                    }}
+                    className={`w-full aspect-square rounded-full border-2 transition-all ${
+                      activeColor === colorKey
+                        ? 'border-gray-800 scale-110 ring-2 ring-blue-500/20 shadow-sm'
+                        : 'border-gray-200 hover:scale-105'
+                    }`}
+                    style={{ backgroundColor: TEXT_COLORS[colorKey] }}
+                    title={colorKey}
+                  />
+                );
+              })}
+            </div>
           </div>
 
           <div>
@@ -935,6 +1021,17 @@ export default function Whiteboard({ boardId }: { boardId: string }) {
                 onChange={e => { setNoteTitle(e.target.value); noteTitleRef.current = e.target.value; }}
                 className="w-full text-sm px-3 py-2 border border-gray-300 rounded-md outline-none focus:border-blue-500"
                 placeholder="请输入标题..."
+                style={{ fontFamily: '"Xiaolai", cursive' }}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">描述内容</label>
+              <textarea
+                value={noteDescription}
+                onChange={e => { setNoteDescription(e.target.value); noteDescriptionRef.current = e.target.value; }}
+                className="w-full text-sm px-3 py-2 border border-gray-300 rounded-md outline-none focus:border-blue-500 resize-none"
+                placeholder="请输入描述..."
+                rows={3}
                 style={{ fontFamily: '"Xiaolai", cursive' }}
               />
             </div>

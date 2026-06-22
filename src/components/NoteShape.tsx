@@ -8,13 +8,18 @@ declare module 'tldraw' {
       w: number;
       h: number;
       title: string;
+      description: string;
       thumbnailUrl: string;
       childBoardId: string;
       color: any;
       isPinned: boolean;
       pinRotation: number;
       borderRadius: number;
-      zIndex: number; // 【新增】：层级数据字段
+      zIndex: number;
+      titleSize: string;
+      descSize: string;
+      titleColor: string;
+      descColor: string;
     };
   }
 }
@@ -27,24 +32,42 @@ const NOTE_COLORS: Record<string, string> = {
   green: '#bbf7d0', 'light-green': '#d9f99d', 'light-red': '#fecaca', red: '#fca5a5',
 };
 
+// 与官方便签一致的配色，用于标题/描述文字颜色
+export const TEXT_COLORS: Record<string, string> = {
+  black: '#1e293b', grey: '#6b7280', 'light-violet': '#8b5cf6', violet: '#7c3aed',
+  blue: '#3b82f6', 'light-blue': '#0ea5e9', yellow: '#ca8a04', orange: '#ea580c',
+  green: '#16a34a', 'light-green': '#22c55e', 'light-red': '#ef4444', red: '#dc2626',
+};
+
+// 字号映射 (对应 S/M/L/XL)
+export const FONT_SIZES: Record<string, { label: string; title: number; desc: number }> = {
+  s:  { label: 'S',  title: 14, desc: 10 },
+  m:  { label: 'M',  title: 18, desc: 13 },
+  l:  { label: 'L',  title: 22, desc: 16 },
+  xl: { label: 'XL', title: 28, desc: 20 },
+};
+
 export class NoteShapeUtil extends ShapeUtil<INoteShape> {
   static override type = 'custom-note' as const;
 
   static override props = {
-    w: T.number, h: T.number, title: T.string, thumbnailUrl: T.string,
+    w: T.number, h: T.number, title: T.string, description: T.string, thumbnailUrl: T.string,
     childBoardId: T.string, color: T.string as any, isPinned: T.boolean,
     pinRotation: T.number, borderRadius: T.number,
-    zIndex: T.number, // 【新增】
+    zIndex: T.number,
+    titleSize: T.string as any, descSize: T.string as any,
+    titleColor: T.string as any, descColor: T.string as any,
   };
 
   override getDefaultProps(): INoteShape['props'] {
     const colors: string[] = ['yellow', 'light-red', 'light-blue', 'light-green', 'orange', 'light-violet'];
     return {
-      w: 240, h: 240, title: '', thumbnailUrl: '',
+      w: 240, h: 240, title: '', description: '', thumbnailUrl: '',
       childBoardId: `board_${Math.random().toString(36).substring(2, 9)}`,
       color: colors[Math.floor(Math.random() * colors.length)],
       isPinned: true, pinRotation: 0, borderRadius: 4,
-      zIndex: 1, // 【新增】：默认层级为 1
+      zIndex: 1,
+      titleSize: 'l', descSize: 'm', titleColor: 'black', descColor: 'grey',
     };
   }
 
@@ -66,7 +89,53 @@ export class NoteShapeUtil extends ShapeUtil<INoteShape> {
 
   override component(shape: INoteShape) {
     const hasImg = !!shape.props.thumbnailUrl && !shape.props.thumbnailUrl.includes('via.placeholder.com');
+    const hasDesc = !!shape.props.description;
+    const hasTitle = !!shape.props.title;
     const bgColor = NOTE_COLORS[shape.props.color as any] || '#fef08a';
+    const titleSize = FONT_SIZES[shape.props.titleSize] || FONT_SIZES.l;
+    const descSize = FONT_SIZES[shape.props.descSize] || FONT_SIZES.m;
+    const titleColor = TEXT_COLORS[shape.props.titleColor] || TEXT_COLORS.black;
+    const descColor = TEXT_COLORS[shape.props.descColor] || TEXT_COLORS.grey;
+
+    // 标题 + 描述作为一个紧贴整体
+    const textGroup = (hasTitle || hasDesc) && (
+      <div style={{
+        flex: 'none',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+      }}>
+        {hasTitle && (
+          <div style={{
+            fontWeight: '600', color: titleColor, textAlign: 'center',
+            fontSize: `${titleSize.title}px`,
+            padding: hasDesc ? '0 0 4px 0' : '0',
+            fontFamily: '"Xiaolai", sans-serif',
+            maxWidth: '100%',
+          }}>
+            <span style={{
+              display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical',
+              overflow: 'hidden', wordBreak: 'break-all',
+            }}>
+               {shape.props.title}
+            </span>
+          </div>
+        )}
+        {hasDesc && (
+          <div style={{
+            textAlign: 'left',
+            alignSelf: 'stretch',
+            fontSize: `${descSize.desc}px`,
+            color: descColor,
+            lineHeight: '1.5',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            overflowWrap: 'break-word',
+            fontFamily: '"Xiaolai", sans-serif',
+          }}>
+            {shape.props.description}
+          </div>
+        )}
+      </div>
+    );
 
     return (
       <HTMLContainer id={shape.id} style={{ pointerEvents: 'all', overflow: 'visible' }}>
@@ -75,42 +144,49 @@ export class NoteShapeUtil extends ShapeUtil<INoteShape> {
           backgroundColor: bgColor, borderRadius: `${shape.props.borderRadius}px`,
           padding: '12px', display: 'flex', flexDirection: 'column', position: 'relative',
           boxShadow: '0 6px 10px -5px rgba(0, 0, 0, 0.5)',
-          zIndex: shape.props.zIndex // 【新增】：内部样式双保险
+          zIndex: shape.props.zIndex,
+          justifyContent: !hasImg && hasDesc ? 'center' : undefined,
         }}>
           {shape.props.isPinned && (
              <div style={{ position: 'absolute', top: '8px', left: '50%', transform: 'translateX(-50%)', width: '14px', height: '14px', borderRadius: '50%', background: 'radial-gradient(circle at 35% 35%, #ef4444, #991b1b)', boxShadow: '0 3px 5px rgba(0,0,0,0.4)', zIndex: 10 }}>
                 <div style={{ position: 'absolute', top: '12px', left: '6px', width: '2px', height: '8px', background: '#64748b', zIndex: -1 }} />
              </div>
           )}
-          
+
           {hasImg && (
-            <div style={{ 
-              flex: 1, position: 'relative', overflow: 'hidden', 
+            <div style={{
+              flex: 1, position: 'relative', overflow: 'hidden',
               borderRadius: '4px',
               border: '1px solid rgba(0, 0, 0, 0.05)',
-              marginTop: shape.props.isPinned ? '12px' : '0', marginBottom: '8px'
+              marginTop: shape.props.isPinned ? '12px' : '0', marginBottom: '8px',
             }}>
                <div style={{
-                  position: 'absolute', inset: 0, 
-                  backgroundImage: `url(${shape.props.thumbnailUrl})`, 
-                  backgroundSize: 'cover', backgroundPosition: 'center' 
+                  position: 'absolute', inset: 0,
+                  backgroundImage: `url(${shape.props.thumbnailUrl})`,
+                  backgroundSize: 'cover', backgroundPosition: 'center'
                }} />
             </div>
           )}
-          
-          <div style={{ 
-            flex: 'none', height: hasImg ? 'auto' : '100%',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', 
-            fontWeight: '600', color: '#1e293b', textAlign: 'center',
-            fontSize: hasImg ? '14px' : '16px',
-            maxHeight: hasImg ? '40px' : 'none', overflow: 'hidden',
-           // 【统一配置】：直接使用 Tldraw 的原生变量，这样整个画板的字体都统一了
-            fontFamily: '"Xiaolai", sans-serif'
-          }}>
-            <span style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-               {shape.props.title}
-            </span>
-          </div>
+
+          {/* 有描述: 标题+描述整体; 无描述无封面: 标题居中撑满; 无描述有封面: 标题紧贴封面下方 */}
+          {hasDesc ? textGroup : (
+            <div style={{
+              flex: hasImg ? 'none' : '1',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              height: hasImg ? 'auto' : undefined,
+            }}>
+              {hasTitle && (
+                <span style={{
+                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden', fontWeight: '600', color: titleColor,
+                  fontSize: `${titleSize.title}px`, textAlign: 'center',
+                  fontFamily: '"Xiaolai", sans-serif'
+                }}>
+                   {shape.props.title}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </HTMLContainer>
     );
